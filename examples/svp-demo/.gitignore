@@ -1,0 +1,6 @@
+gen/
+__pycache__/
+lara_svp_*
+lara_posed.npz
+*.PHD
+*.phd

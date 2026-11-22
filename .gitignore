@@ -1,0 +1,4 @@
+ssp16as
+*.o
+tests/mame_dasm
+tests/out/

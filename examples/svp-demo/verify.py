@@ -30,14 +30,9 @@ def screen(path):
     return img[vy0:vy0 + M.H, :M.W].astype(np.uint8), vy0
 
 def expect_rgb(fb, vy0):
-    """model frame as 3-bit RGB: palette 0, entry 13 per screen line from d['GRAD'] (the 68000's H-interrupt)"""
-    out = np.zeros((M.H, M.W, 3), np.uint8)
-    for r in range(M.H):
-        pal = list(d['PAL'])
-        if 'GRAD' in d: pal[13] = d['GRAD'][vy0 + r]
-        P = np.array([((c >> 1) & 7, (c >> 5) & 7, (c >> 9) & 7) for c in pal], np.uint8)
-        out[r] = P[fb[r]]
-    return out
+    """model frame as 3-bit RGB through palette 0"""
+    P = np.array([((c >> 1) & 7, (c >> 5) & 7, (c >> 9) & 7) for c in d['PAL']], np.uint8)
+    return P[fb]
 
 FPS_BOX = (188, 4, 252, 12)        # main.c FPS_X, FPS_Y: 8 sprites of 8 x 8, screen coordinates (x0, y0, x1, y1)
 

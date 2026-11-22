@@ -15,9 +15,9 @@
  *
  * Frame rate counter: 8 sprites "FPS dd.d" at screen x 188..251, rows 4..11 (above the viewport, outside the SSP
  * frame buffer), 5 x 7 font in 15 patterns at VRAM 0xD000 (pattern 0x680), colour 1 of palette line 1.  Vertical
- * blanks are counted by the V-interrupt (crt0.s vint); at each SSP answer the frame count rises, and once at least one
- * second of blanks (60 NTSC, 50 PAL: status bit 0) has passed, fps = rate * frames / blanks, rounded to one decimal;
- * the sprites' patterns are rewritten in the next blank window.
+ * blanks are counted by polling the VDP status (bit 3) in every wait; at each SSP answer the frame count rises, and
+ * once at least one second of blanks (60 NTSC, 50 PAL: status bit 0) has passed, fps = rate * frames / blanks,
+ * rounded to one decimal, and the sprites' patterns are rewritten.
  */
 #include <stdint.h>
 #include "palette.h"
@@ -35,14 +35,11 @@
 #define BLANK_PAT 0x780u
 #define BANDS 6u
 #define BAND_BYTES 0x1000u
-#define FRAME_VBLANKS 4u                    /* 15 frames a second at 60 Hz: 4 blank windows a frame */
+#define FRAME_VBLANKS 4u                    /* 15 frames a second at 60 Hz */
 
 static volatile uint32_t dma_cmd;           /* the DMA-starting command word is written from RAM */
-volatile uint32_t vbl_total;               /* vertical blanks, counted by the V-interrupt (crt0.s vint) */
-volatile uint16_t dma_armed, blank_flag;   /* crt0.s hint: display off after the last viewport line when armed */
-#ifdef HINT_DEBUG
-volatile uint32_t hint_dbg = 0xFF8100u;
-#endif
+static uint32_t vbl_total;                  /* vertical blanks seen */
+static unsigned vb_prev;
 
 #define FONT_BASE 0xD000u
 #define FONT_PAT  (FONT_BASE >> 5)
@@ -61,6 +58,20 @@ static void vdp_reg(unsigned r, unsigned v) { VDP_CTRL = (uint16_t)(0x8000u | (r
 
 static void vram_addr(uint32_t a) { VDP_CTRL32 = 0x40000000u | ((a & 0x3FFFu) << 16) | (a >> 14); }
 static void cram_addr(uint32_t a) { VDP_CTRL32 = 0xC0000000u | ((a & 0x3FFFu) << 16) | (a >> 14); }
+
+static void wait_vblank(void)
+{
+    while (VDP_CTRL & 8u) ;
+    while (!(VDP_CTRL & 8u)) ;
+    vbl_total++; vb_prev = 1u;
+}
+
+static void poll_vb(void)
+{
+    unsigned st = VDP_CTRL & 8u;
+    if (st && !vb_prev) vbl_total++;
+    vb_prev = st;
+}
 
 static void font_init(void)
 {
@@ -124,32 +135,16 @@ static void name_table(uint32_t nt, unsigned base)
 }
 
 static void svp_command(uint16_t k) { SVP_XST = k; }
-static void svp_wait(void) { while (!(SVP_STAT & 1u)) ; }
-
-/* Raster colour of palette entry 13 (the floor) per screen line: crt0.s hint writes floor_grad[] to CRAM entry 13 in
- * each H-interrupt (VDP register 10 = 0), indexed by the V counter; when the main program has armed it, the H-interrupt
- * of the last viewport line turns the display off, so that lines 208..261 are blank and the 6 KB DMA of each window
- * runs at blank speed.  The main program writes the VDP only with interrupts masked (the handlers write the control
- * port). */
-#define REG1_ON   0x74u                      /* display on, V-interrupt on, DMA on, mode 5 */
-#define HALF      0x800u                     /* DMA transfer: half a band, 2 KB */
-#define HALVES_PER_BLANK 3u                  /* 6 KB in each blank window, 12 halves = 24 KB in 4 windows */
-
-static void ints_off(void) { __asm__ volatile ("move.w #0x2700, %%sr" ::: "memory"); }
-static void ints_on(void)  { __asm__ volatile ("move.w #0x2000, %%sr" ::: "memory"); }
-#ifdef HINT_DEBUG
-static unsigned vcount(void) { return *(volatile uint8_t *)0xC00008; }
-#endif
+static void svp_wait(void) { while (!(SVP_STAT & 1u)) poll_vb(); }
 
 int main(void)
 {
-    static const uint8_t regs[] = { 0x14, 0x34, NT0 >> 10, 0x00, NT0 >> 13, 0xC800u >> 9, 0x00, 0x00, 0x00, 0x00,
-                                    0x00, 0x00, 0x00, 0xCC00u >> 10, 0x00, 0x02, 0x00, 0x00, 0x00 };
-    unsigned i, frames = 0, rate, fps_pending = 0, fps_val = 0;
+    static const uint8_t regs[] = { 0x04, 0x54, NT0 >> 10, 0x00, NT0 >> 13, 0xC800u >> 9, 0x00, 0x00, 0x00, 0x00,
+                                    0xFF, 0x00, 0x00, 0xCC00u >> 10, 0x00, 0x02, 0x00, 0x00, 0x00 };
+    unsigned i, vb = 0, frames = 0, rate;
     uint32_t vbl_base;
     uint16_t k;
     (void)VDP_CTRL;
-    ints_off();
     for (i = 0; i < sizeof regs; i++) vdp_reg(i, regs[i]);
     vdp_reg(1, 0x14);                       /* display off while VRAM is set up */
     vram_addr(0);
@@ -162,47 +157,31 @@ int main(void)
     name_table(NT0, 0);
     name_table(NT1, SET1_BASE >> 5);
     VDP_CTRL32 = 0x40000010u; VDP_DATA = 0; VDP_DATA = 0;   /* VSRAM 0 */
-    rate = (VDP_CTRL & 1u) ? 50u : 60u;
-    vdp_reg(1, REG1_ON);
-    ints_on();
+    vdp_reg(1, 0x54);
 
+    rate = (VDP_CTRL & 1u) ? 50u : 60u;
     k = 1;
     svp_command(k);
     svp_wait();
     vbl_base = vbl_total;
     for (;;) {
-        unsigned b = k & 1u, w, h;
+        unsigned b = k & 1u, band;
         uint32_t set = b ? SET1_BASE : 0u;
         svp_command((uint16_t)(k + 1u));     /* the SSP renders k + 1 into the other buffer */
-        for (w = 0; w < FRAME_VBLANKS; w++) {
-            blank_flag = 0; dma_armed = 1;
-            while (!blank_flag) ;           /* display off after line 207 (crt0.s hint) */
-            ints_off();
-            dma_armed = 0;
-#ifdef HINT_DEBUG
-            *(volatile uint8_t *)(0xFF8000u + 2u * w) = (uint8_t)vcount();
-#endif
-            for (h = w * HALVES_PER_BLANK; h < (w + 1u) * HALVES_PER_BLANK; h++) {
-                unsigned band = h >> 1, half = h & 1u;
-                dma_svp_to_vram(SVP_CELL1 + band * 0x2000u + b * BAND_BYTES + half * HALF,
-                                set + band * BAND_BYTES + half * HALF, HALF);
-            }
-            if (w == FRAME_VBLANKS - 1u) {   /* frame k complete in VRAM: show it from line 0 */
-                vdp_reg(2, (b ? NT1 : NT0) >> 10);
-                vdp_reg(4, (b ? NT1 : NT0) >> 13);
-            }
-            if (fps_pending) { fps_text(fps_val); fps_pending = 0; }
-#ifdef HINT_DEBUG
-            *(volatile uint8_t *)(0xFF8001u + 2u * w) = (uint8_t)vcount();
-#endif
-            vdp_reg(1, REG1_ON);
-            ints_on();
+        for (band = 0; band < BANDS; band++) {
+            if (!(band & 1u)) { wait_vblank(); vb++; }
+            dma_svp_to_vram(SVP_CELL1 + band * 0x2000u + b * BAND_BYTES, set + band * BAND_BYTES, BAND_BYTES);
         }
+        while (vb < FRAME_VBLANKS) { wait_vblank(); vb++; }
+        wait_vblank();
+        vdp_reg(2, (b ? NT1 : NT0) >> 10);
+        vdp_reg(4, (b ? NT1 : NT0) >> 13);
+        vb = 1;
         svp_wait();
         frames++;
         if (vbl_total - vbl_base >= rate) {
             uint32_t el = vbl_total - vbl_base;
-            fps_val = (unsigned)((frames * rate * 10u + el / 2u) / el); fps_pending = 1;
+            fps_text((unsigned)((frames * rate * 10u + el / 2u) / el));
             frames = 0; vbl_base = vbl_total;
         }
         k++;

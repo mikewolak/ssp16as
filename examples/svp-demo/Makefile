@@ -10,7 +10,6 @@
 SSP16AS  = ../../ssp16as
 CORE     =
 LARA_PHD =
-GRAD     = --grad-pure
 M68K     = m68k-elf-
 M68KFLAGS = -m68000 -O2 -ffreestanding -fno-builtin -nostdlib -Wall -Wextra -std=c99
 B        = gen
@@ -23,12 +22,12 @@ $(SSP16AS):
 	$(MAKE) -C ../.. ssp16as
 
 $(B)/room/tables.inc: mkmesh.py
-	python3 mkmesh.py $(B)/room $(GRAD)
+	python3 mkmesh.py $(B)/room
 $(B)/noroom/tables.inc: mkmesh.py
 	python3 mkmesh.py $(B)/noroom --no-room
 $(B)/run/tables.inc: mkmesh.py svp_model.py extract.py
 	@test -n "$(LARA_PHD)" || { echo "make lara: LARA_PHD=FILE (Tomb Raider PC LEVEL1.PHD) required"; exit 1; }
-	LARA_PHD="$(LARA_PHD)" python3 mkmesh.py $(B)/run --lara-run $(GRAD)
+	LARA_PHD="$(LARA_PHD)" python3 mkmesh.py $(B)/run --lara-run
 
 $(B)/crt0.o: crt0.s
 	@mkdir -p $(B)

@@ -3,7 +3,7 @@
 **Two-pass assembler and disassembler for the Samsung SSP1601 DSP of the Sega Virtua Processor (SVP, Sega 315-5750). Full SSP1601 instruction set as decoded by the MAME disassembler, labels, equ, org, dw, expressions, the espp preprocessor (.include, .equ, .macro, .rept, .if), listing file, three output formats. Strict C99, POSIX getopt(), libc only. Project svp-lara, Mike Wolak, EPROM Foundry Inc.**
 
 <p align="center"><img src="docs/img/fig1_svp_demo.png" width="784" alt="SVP cartridge demonstration, three frames of the rotating running figure on a scrolling perspective floor"></p>
-<p align="center"><sub><b>Figure 1.</b> SVP cartridge demonstration assembled with ssp16as: a 15-part, 375-face figure in an 11-pose running cycle, rotating about Y, over a perspective floor that scrolls along the figure's heading. Frames 141, 181 and 221 of the cartridge built from `examples/svp-demo` (CRC-32 879EDF24), Genesis Plus GX through the libretro interface, 256 x 224, scaled 2x. The figure data is derived from Tomb Raider (Core Design Ltd., 1996) and is not part of this repository or any distribution.</sub></p>
+<p align="center"><sub><b>Figure 1.</b> SVP cartridge demonstration assembled with ssp16as: a 15-part, 375-face figure in an 11-pose running cycle, rotating about Y, over a perspective floor that scrolls along the figure's heading. Frames 141, 181 and 221 of an earlier build of `examples/svp-demo`, Genesis Plus GX through the libretro interface, 256 x 224, scaled 2x. The figure data is derived from Tomb Raider (Core Design Ltd., 1996) and is not part of this repository or any distribution.</sub></p>
 
 ---
 
@@ -94,30 +94,29 @@ espp (section 11) runs before the assembler: `.include "FILE"`, `.equ NAME VALUE
 | Item | Value |
 |---|---|
 | SSP program | `mesh.s`, 1,229 lines; words 0x0400-0xBFA7 (48,040 words) in the Lara build, including the generated pose, projection and floor tables |
-| 68000 program | `crt0.s` (vectors, header, H- and V-interrupt handlers), `main.c` (frame command, DMA, frame counter, floor gradient) |
+| 68000 program | `crt0.s` (vectors, header, start-up), `main.c` (frame command, DMA, frame counter); no interrupt handlers, vertical blanks polled from the VDP status |
 | Cartridge | 262,144 bytes; header serial `MK-1229 ` at 0x183 (the MiSTer Genesis core's SVP test) and `SV` at 0x1C8 (Genesis Plus GX's test); MAME maps the SVP only through its software list or for a 2 MB image named Virtua Racing at 0x150, so this image is not mapped by MAME (section 9.4.4) |
 | Scene | 15 rigid parts, 300 vertices and 375 faces per pose; 11 poses of a running cycle; rotation 4/256 turn per frame; 3 materials x 4 shades |
-| Floor | perspective grid to a horizon at z = -5,664, cells of 160 units, scrolling along the figure's heading with a 64-frame period; drawn by the SSP in one palette entry |
-| Floor shading | the 68000's H-interrupt rewrites palette entry 13 in horizontal blank on each display line, from black at the horizon (line 22) to green (0, 7, 2) at line 207: 27 colours (`--grad-pure`, default) or 68 colours (`GRAD=`) |
-| Frame buffer | 256 x 192, 4 bits per pixel, two buffers in cartridge DRAM; the 68000 copies the finished buffer to VRAM by DMA in 4 windows per frame with the display blanked from line 208 |
+| Floor | perspective grid to a horizon at z = -5,664, cells of 160 units, scrolling along the figure's heading with a 64-frame period; one palette entry (green); front-to-back lines 1 pixel wide, cross-lines exactly 1 row on every frame, far lines thinned so that no two cross-lines are less than 2 rows apart |
+| Frame buffer | 256 x 192, 4 bits per pixel, two buffers in cartridge DRAM; the 68000 copies the finished buffer (6 bands of 4 KB) to the hidden VRAM pattern set by DMA through the cell-arrangement window 0x390000 and switches the name tables after the copy; 4 vertical blanks per frame |
 | Frame counter | "FPS dd.d" in eight sprites, measured by the 68000 over at least 1 s of vertical blanks |
 
 ### 7.2 Measured
 
 | Item | Value |
 |---|---|
-| SSP instructions per frame (ssp16sim, frames 1-64) | Lara build: 300,458 minimum, 348,396 maximum, 321,222 mean; mannequin build: 305,322 / 330,993 / 319,545 |
+| SSP instructions per frame (ssp16sim, frames 1-64) | Lara build: 293,458 minimum, 342,018 maximum, 314,532 mean; mannequin build: 297,575 / 324,562 / 312,856 |
 | Correctness | 64 of 64 frames of each build byte-identical to `mesh_model.py` in ssp16sim; 37 of 37 Genesis Plus GX screens equal to a model frame, the displayed frame advancing by 1 every 4 video frames |
 | Frame rate, Genesis Plus GX | 15.0 frames/s (frame counter) |
-| Frame rate, MiSTer Genesis core on a Pano Logic G2 | 15.0 frames/s (frame counter) with a single floor colour and a worst frame of 348,086 SSP instructions; the raster gradient build (CRC-32 879EDF24) is untested there |
+| MiSTer Genesis core on a Pano Logic G2 | 15.0 frames/s (frame counter) on an earlier build with a worst frame of 348,086 SSP instructions; this build (CRC-32 E2427782) runs continuously with constant line thickness (observed on the unit; frame counter value not recorded) |
 | Original SVP hardware | untested |
 
 ### 7.3 Build
 
 Requirements: `m68k-elf-gcc` and `m68k-elf-objcopy` (tested with GCC 16.2.0), a C99 compiler, Python 3 with NumPy and Pillow (tested with Python 3.9.6, NumPy 2.0.2, Pillow 11.3.0). The Lara build also requires a Tomb Raider (1996) PC level file `LEVEL1.PHD` (format version 0x20); `make shots` requires a Genesis Plus GX libretro core.
 
-1. `make -C examples/svp-demo` builds ssp16as if needed, then `gen/mesh.bin` (mannequin figure, CRC-32 15B18770), `gen/mesh_noroom.bin`, `gen/ssp16sim` and `gen/lrshot`.
-2. `make -C examples/svp-demo lara LARA_PHD=/path/to/LEVEL1.PHD` builds `gen/lara_run.bin` (CRC-32 879EDF24 from the level file of section 7.4). The level file is read in place; no data derived from it is written outside `gen/`.
+1. `make -C examples/svp-demo` builds ssp16as if needed, then `gen/mesh.bin` (mannequin figure, CRC-32 D73F98CC), `gen/mesh_noroom.bin`, `gen/ssp16sim` and `gen/lrshot`.
+2. `make -C examples/svp-demo lara LARA_PHD=/path/to/LEVEL1.PHD` builds `gen/lara_run.bin` (CRC-32 E2427782 from the level file of section 7.4). The level file is read in place; no data derived from it is written outside `gen/`.
 3. `make -C examples/svp-demo verify` runs ssp16sim for frames 1-64 of every built cartridge against the model.
 4. `make -C examples/svp-demo shots CORE=/path/to/genesis_plus_gx_libretro.dylib` runs each cartridge in the core and compares the screens with the model.
 5. The image runs in Genesis Plus GX and in the MiSTer Genesis core; MAME does not map the SVP for it (section 9.4.4, untested in MAME).
@@ -136,7 +135,7 @@ Requirements: `m68k-elf-gcc` and `m68k-elf-objcopy` (tested with GCC 16.2.0), a 
 |---|---|
 | `Makefile` | targets all, lara, verify, shots, clean |
 | `mesh.s` | SSP1601 renderer: clear, transform, projection, cull, flat-shaded triangle fill, floor lines |
-| `crt0.s`, `cart.ld`, `main.c` | 68000 start-up, header, link map, frame command loop, DMA, H-interrupt gradient, frame counter |
+| `crt0.s`, `cart.ld`, `main.c` | 68000 start-up, header, link map, frame command loop, DMA, frame counter |
 | `mkmesh.py` | generates `tables.inc`, `palette.h` and `mesh.json` (geometry, poses, projection and floor tables) |
 | `extract.py`, `svp_model.py` | TR1 PC level reader and posed-model builder for the Lara build |
 | `mesh_model.py`, `verify.py` | bit-exact Python model of the renderer; comparison against ssp16sim and emulator captures |
@@ -458,8 +457,8 @@ Procedure of `examples/svp-demo/main.c` (68000) and `mesh.s` (SSP): a 256 x 192 
 1. The 68000 writes k + 1 to 0xA15000 (CA set).
 2. The SSP, polling EXT0 bit 1, reads k + 1 from EXT3 and starts frame k + 1 into buffer (k + 1) & 1.
 3. The SSP clears its buffer through PM4 (mode 0x0818), transforms and projects the vertices with X, Y, P and RAM0/RAM1, and fills triangles through PM4 in over-write mode (mode 0x0C18), one PMC address/mode pair per span.
-4. Meanwhile the 68000 copies buffer k & 1 to VRAM: in each of 4 vertical blanks, with the display turned off after line 207 by the H-interrupt, it runs 3 DMA transfers of 2 KB from window 0x390000 (6 KB a blank, 24 KB a frame), each by the procedure of Section 9.5.3.
-5. After the fourth blank the 68000 switches the name tables (VDP registers 2 and 4) to the set that holds frame k.
+4. Meanwhile the 68000 copies buffer k & 1 to the hidden VRAM pattern set: 6 DMA transfers of 4 KB from window 0x390000 (24 KB a frame), two after each of the first 3 vertical blanks, each by the procedure of Section 9.5.3.
+5. After the fourth vertical blank of the frame the 68000 switches the name tables (VDP registers 2 and 4) to the set that holds frame k.
 6. The SSP writes k + 1 to EXT3 (SA set) and returns to polling EXT0.
 7. The 68000 polls 0xA15004 bit 0, counts the frame, increments k and continues at step 1.
 
@@ -525,7 +524,6 @@ XST status race in the MiSTer core (`rtl/SVP/SVP.vhd`, Genesis_MiSTer adc0c42): 
 | Item | State |
 |---|---|
 | Programs on original SVP hardware | untested; verified in ssp16sim, Genesis Plus GX and the MiSTer Genesis core only |
-| Raster floor gradient on hardware | the per-line palette writes are timed into horizontal blank in Genesis Plus GX only; CRAM dots and timing on MiSTer or Sega hardware untested |
 | Instructions outside the MiSTer SSP160x subset (conditions other than always, z, n; mod operations other than shr, shl, neg, abs) | encoded per MAME and svpdoc.txt; not executed on any hardware |
 | Hosts other than macOS arm64 | untested; the source uses C99 and POSIX getopt() only |
 

@@ -65,7 +65,6 @@ LX0     equ 0x20        ; treadmill: current x-line centre
 LZ0     equ 0x21        ; treadmill: current z-line centre
 LCNT    equ 0x22        ; treadmill: front-to-back lines left
 LCNT2   equ 0x23        ; treadmill: far cross-lines left
-TT      equ 0x24        ; treadmill: cross-line half thickness
 LZN     equ 0x25        ; treadmill: first near cross-line
 LCNT3   equ 0x26        ; treadmill: near cross-lines left
 ZC      equ 0x27        ; xline: near z
@@ -397,8 +396,9 @@ xform:
 
 ; ================================================================ floor lines
 ; xline: front-to-back line at x = LX0 from TM_ZF to ZCT[|x| >> 5], one pixel a row, coloured by depth band
-; (FBAND row runs).  zline: colour CLT[(z - TM_ZF) >> 5].
-; zline: cross-line at z = LZ0, half thickness THK[(z - TM_ZF) >> 5], half extent XWT[..].  Colour COLW.
+; (FBAND row runs).
+; zline: cross-line at z = LZ0, exactly one screen row (the projected row of z), from the projection of
+; (XWT[(z - TM_ZF) >> 5], FY, z) to that of (-XWT[..], FY, z) inclusive, colour CLT[..].
 xline:
         ld A, ram0[LX0]          ; zc = ZCT[|x| >> 5]
         andi A, 0xFFFF
@@ -517,7 +517,7 @@ el_end:
         ret
 
 zline:
-        ld A, ram0[LZ0]          ; t = THK[(z - ZF) >> 5], w = XWT[(z - ZF) >> 5]
+        ld A, ram0[LZ0]          ; colour CLT[(z - ZF) >> 5], half extent w = XWT[(z - ZF) >> 5]
         subi A, TM_ZF
         mod always, shr
         mod always, shr
@@ -525,56 +525,98 @@ zline:
         mod always, shr
         mod always, shr
         ld ram0[ZIDX], A
-        addi A, CLT              ; colour word of the line's depth band
+        addi A, CLT
         ld X, (A)
         ld A, X
         ld ram0[COLW], A
-        ld A, ram0[ZIDX]
-        addi A, THK
-        ld X, (A)
-        ld A, X
-        ld ram0[TT], A
         ld A, ram0[ZIDX]
         addi A, XWT
         ld X, (A)
         ld A, X
         ld ram0[XW], A
         ldi r0, PAIRS
-        ldi A, 0x0000
+        ldi A, 0x0000            ; (-w, FY, z): the right end on screen (sx = 128 - x R)
         sub A, ram0[XW]
         ld (r3|00), A
         ldi A, TM_FY
         ld (r3|01), A
         ld A, ram0[LZ0]
-        sub A, ram0[TT]
         ld (r3|10), A
         call always, project
-        ld A, ram0[XW]
+        ld A, ram0[XW]           ; (w, FY, z): the left end, on the same row
         ld (r3|00), A
         ldi A, TM_FY
         ld (r3|01), A
         ld A, ram0[LZ0]
-        sub A, ram0[TT]
         ld (r3|10), A
         call always, project
-        ld A, ram0[XW]
-        ld (r3|00), A
-        ldi A, TM_FY
-        ld (r3|01), A
-        ld A, ram0[LZ0]
-        add A, ram0[TT]
-        ld (r3|10), A
-        call always, project
-        ldi A, 0x0000
-        sub A, ram0[XW]
-        ld (r3|00), A
-        ldi A, TM_FY
-        ld (r3|01), A
-        ld A, ram0[LZ0]
-        add A, ram0[TT]
-        ld (r3|10), A
-        call always, project
-        call always, quad_fill
+; one row: the projected row of z, pixels from the left end to the right end inclusive
+        ld A, ram0[COLW]
+        ld (r3|11), A
+        ld A, ram0[PAIRS + 1]
+        cmpi 0x00
+        bra n=1, hs_ret
+        cmpi 0xC0
+        bra n=0, hs_ret
+        andi A, 0xFFFF
+        mod always, shl
+        mod always, shl
+        mod always, shl
+        mod always, shl
+        mod always, shl
+        mod always, shl
+        mod always, shl
+        add A, ram0[BUFOFF]
+        ld ram0[ROWB], A
+        ld A, ram0[PAIRS + 2]
+        ld r0, A
+        ld A, ram0[PAIRS]
+        ld r4, A
+        ld A, r0
+        andi 0x03
+        addi LMASK
+        ld r5, A
+        ld A, r4
+        andi 0x03
+        addi RMASK
+        ld r6, A
+        ld A, r0
+        mod always, shr
+        mod always, shr
+        ld ram0[N0], A
+        ld A, r4
+        mod always, shr
+        mod always, shr
+        sub A, ram0[N0]
+        ld ram0[CNT], A
+        ld A, ram0[ROWB]
+        add A, ram0[N0]
+        ld -, AL
+        ld EXT6, A
+        ldi EXT6, MODE_FILL
+        ld EXT4, -
+        ld A, ram0[CNT]
+        subi 0x01
+        bra n=0, hs_multi
+        ld A, (r3|11)
+        and A, (r5)
+        and A, (r6)
+        ld EXT4, A
+        ret
+hs_multi:
+        ld A, (r3|11)
+        and A, (r5)
+        ld EXT4, A
+        ld Y, (r3|11)
+        ldi A, FILLEND + 1
+        sub A, ram0[CNT]
+        ldi STACK, hs_right
+        ld PC, A
+hs_right:
+        ld A, (r3|11)
+        and A, (r6)
+        ld EXT4, A
+hs_ret:
         ret
 
 ; ================================================================ project one vertex

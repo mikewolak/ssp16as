@@ -123,10 +123,14 @@ def treadmill(d, fb, k, c, s):
         p = [proj(*v) for v in q]
         n += tri_fill(fb, (p[0][0], p[1][0], p[2][0]), (p[0][1], p[1][1], p[2][1]), col)
         n += tri_fill(fb, (p[0][0], p[2][0], p[3][0]), (p[0][1], p[2][1], p[3][1]), col)
-    def zline(z, col):
-        i = (z - ZF) >> SH; t = T['THK'][i]; w = T['XWT'][i]
+    def zline(z, col):                # one row: the projected row of z, from the (w, z) end to the (-w, z) end
+        nonlocal n
+        i = (z - ZF) >> SH; w = T['XWT'][i]
         if 'CLT' in T: col = T['CLT'][i] & 15
-        quad([(-w, FY, z - t), (w, FY, z - t), (w, FY, z + t), (-w, FY, z + t)], col)
+        (xr, y), (xl, y2) = proj(-w, FY, z), proj(w, FY, z)
+        assert y == y2 and 0 <= xl <= xr <= 255, (xl, xr, y, y2)
+        if 0 <= y < H: fb[y, xl:xr + 1] = col
+        n += 1
     if T['HOR']: zline(ZF, 14)
     col = d['LUT'][24] & 15
     for i in range(nx):

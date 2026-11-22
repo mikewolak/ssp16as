@@ -4,9 +4,8 @@ frustum limbs and torso, box hands and feet) standing at the centre of a grid ro
 thin line quads in one green palette entry on black).
 
   mkmesh.py <out_dir> [--no-room] [--floor-infinite | --floor-room | --no-treadmill] [--floor N] [--wall-v N] [--wall-h N]
-  --grad-pure: gradient colours within 1.2 levels of the floor hue (27 colours) instead of the 68-colour greens
-  --no-raster-fade: no 68000 line gradient of the floor colour (default on for the infinite floor)
-  --fade N: depth fade of the infinite floor in N bands (default 1 with the raster gradient, else 3) (default 3, at most the free palette entries + 1; 1 = off)
+  --fade N: depth fade of the infinite floor in N colour bands (default 1 = one floor colour; at most the free palette
+  entries + 1)
   room builds: --floor-infinite (default) treadmill ground plane to a horizon, no wall; --floor-room the back wall
   and bordered treadmill floor; --no-treadmill the back wall and the static floor grid
 writes <out_dir>/tables.inc (ssp16as source), palette.h (68000 CRAM words), mesh.json (model data).
@@ -210,6 +209,11 @@ def treadmill(mode, WF=None, hw_at=None):
         z = NZ
         while z > ZF and fproj((0, FY, z))[1] - fproj((0, FY, z - TM_CELL))[1] >= THIN_PX: z -= 16
         ZTHIN = z
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mesh_model as M
+    def zrow(z):                                          # the cart's projected row of a floor point at z (angle 0)
+        xv, yt, zt = M.transform(SIN[64], SIN[0], CT, ST, 0, FY, z)
+        return CY + M.hi(2 * yt * RECIP[(D - zt) >> RSH])
     R = TM_V / (2 * math.pi / 64)
     tab = []
     for k in range(64):
@@ -220,11 +224,19 @@ def treadmill(mode, WF=None, hw_at=None):
         def zlines(step, lo, hi_):
             out = []; z = ZF + ((pz - ZF) % step)
             while z <= NZ:
-                t = THK[(z - ZF) >> TM_SH]
-                if z - t > ZF + THK[0] and z + t < NZ - 2 * THK[-1] and lo <= z < hi_: out.append(z)
+                if lo <= z < hi_ and ZF < z < NZ: out.append(z)
                 z += step
             return out
         far = zlines(2 * TM_CELL, ZF, ZTHIN); near = zlines(TM_CELL, ZTHIN, NZ + 1)
+        # one row a cross-line: no two lines on the same or adjacent rows (horizon line included); near lines kept,
+        # far lines dropped from either end of their run until every gap is at least 2 rows
+        near = [z for z in near if 0 <= zrow(z) <= 191]
+        taken = [zrow(z) for z in near] + ([zrow(ZF)] if mode == 'infinite' else [])
+        far = [z for z in far if 0 <= zrow(z) <= 191]
+        while far and any(abs(zrow(far[-1]) - r) < 2 for r in taken): far.pop()
+        while far and any(abs(zrow(far[0]) - r) < 2 for r in taken): far.pop(0)
+        rows = sorted(taken + [zrow(z) for z in far])
+        assert all(b - a >= 2 for a, b in zip(rows, rows[1:])), rows
         tab += [x0, nx, far[0] if far else 0, len(far), near[0] if near else 0, len(near), 0, 0]
     return {'border': border, 'HF': HWT[0], 'FY': FY, 'ZF': ZF, 'NZ': NZ, 'CELL': TM_CELL, 'SH': TM_SH,
             'HWT': HWT, 'THK': THK, 'XWT': XWT, 'ZCT': ZCT, 'TMTAB': tab, 'HOR': HOR_ON, 'XMAX': XMAX, 'ZTHIN': ZTHIN}
@@ -325,34 +337,6 @@ def lara_figure(height=640.0, anim_rel=11, fidx=0, norm=None, lab=None):
         out.append(('mesh%d' % b, V, Fc, mvals, mm))
     return out, mats, norm, lab
 
-def raster_gradient(T, near, pure=False):
-    """CRAM entry 13 per screen line 0..209 for the 68000's H-interrupt: black above the horizon row, then a ramp
-    to the floor colour at the last viewport line (207), through every 3-bit colour with R <= min(2, G / 2) and
-    B <= min(5, G / 2 + 2) (greens with a little red and blue) in order of luminance, one luminance step per colour."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import mesh_model as M
-    xv, yt, zt = M.transform(SIN[64], SIN[0], CT, ST, 0, T['FY'], T['ZF'])
-    hline = 16 + CY + M.hi(2 * yt * RECIP[(D - zt) >> RSH])
-    Y = lambda c: 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
-    cand = [(r, g, b) for r in range(3) for g in range(8) for b in range(6) if b <= min(5, g // 2 + 2) and r <= min(2, g // 2)]
-    if pure:                                                         # --grad-pure: within 1.2 levels of the floor hue
-        dv = np.array([(near >> 1) & 7, (near >> 5) & 7, (near >> 9) & 7], float); dv /= np.linalg.norm(dv)
-        cand = [c for c in [(r, g, b) for r in range(8) for g in range(8) for b in range(8)]
-                if np.linalg.norm(np.array(c) - np.dot(c, dv) * dv) <= 1.2 and np.dot(c, dv) >= 0]
-    cand.sort(key=lambda c: (Y(c), c))
-    seq = []
-    for c in cand:                                                   # strictly rising luminance
-        if not seq or Y(c) > Y(seq[-1]) + 1e-9: seq.append(c)
-    top = [(near >> 1) & 7, (near >> 5) & 7, (near >> 9) & 7]
-    seq = [c for c in seq if Y(c) <= Y(top) + 1e-9]
-    if tuple(top) not in seq: seq.append(tuple(top))
-    grad = []
-    for L in range(210):
-        if L < hline: grad.append(0); continue
-        t = min(1.0, (L - hline) / (207 - hline))
-        grad.append(cram(*seq[int(round(t * (len(seq) - 1)))]))
-    return grad, len(set(grad[hline:208]))
-
 def fade_tables(T, FADE):
     """Depth fade of the infinite floor: len(FADE) bands of equal z from the horizon (T['ZF']) to the near edge,
     band b (0 = nearest) in palette index FADE[b].  CLT: colour word of a cross-line by its z bucket ((z - ZF) >> SH).
@@ -412,8 +396,7 @@ def build(argv):
             pal.append(cram(*[min(7, round(c * f)) for c in m]))
     pal.append(cram(*GREEN))                                         # index 13: floor, nearest band
     free = 16 - len(pal)                                             # entries after the figure's and the floor's
-    raster = infinite and '--no-raster-fade' not in argv                # 68000 per-line CRAM gradient of entry 13
-    nfade = min(opt('--fade', 1 if raster else 3), free + 1) if infinite else 1
+    nfade = min(opt('--fade', 1), free + 1) if infinite else 1
     FADE = [13]                                                      # band palette indices, near to far
     for b in range(1, nfade):
         f = b / (nfade - 1)
@@ -477,15 +460,9 @@ def build(argv):
             f.write('\tdw VERTS + %d, %d, FACES + %d, %d, %s, %s, %s, 0\n' % (va, nv - 1, fa, nf - 1, *[w(x) for x in c]))
         table('VERTS', VERTS, 3)
         table('FACES', FACES, 8)
-    grad, ncol = raster_gradient(TM, pal[13], '--grad-pure' in argv) if raster else ([pal[13]] * 210, 1)
     with open(os.path.join(out, 'palette.h'), 'w') as f:
-        f.write('/* generated by mkmesh.py -- palette 0, CRAM words; floor_grad: CRAM entry 13 per screen line (main.c) */\n')
+        f.write('/* generated by mkmesh.py -- palette 0, CRAM words */\n')
         f.write('static const unsigned short palette0[16] = {\n    ' + ', '.join('0x%04X' % p for p in pal) + '\n};\n')
-        f.write('const unsigned short floor_grad[210] = {\n')
-        for i in range(0, 210, 12): f.write('    ' + ', '.join('0x%04X' % g for g in grad[i:i + 12]) + ',\n')
-        f.write('};\n')
-    J['GRAD'] = grad
-    if raster: print('raster gradient: %d distinct colours' % ncol)
     if TM: J['tread'] = TM
     J.update({'SIN': SIN, 'RECIP': RECIP, 'RSH': RSH, 'LQ': LQ, 'CT': CT, 'ST': ST, 'D': D, 'CY': CY, 'LUT': LUT, 'PAL': pal})
     with open(os.path.join(out, 'mesh.json'), 'w') as f: json.dump(J, f)
